@@ -1,0 +1,7 @@
+{
+  "name": "TravelOps",
+  "description": "A comprehensive travel package creation dashboard for travel agents to manage flights, hotels, pricing, and itineraries.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
