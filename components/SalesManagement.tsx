@@ -1,26 +1,26 @@
-import React, { useState, useEffect } from 'react';
-import { PackageState, Booking, User } from '../types';
+import React, { useState } from 'react';
+import { Booking } from '../types';
 import { SectionWrapper } from './SectionWrapper';
-import { BookingModal } from './BookingModal'; // Import new component
+import { BookingModal } from './BookingModal';
+import { usePackageStore } from '../store/usePackageStore';
+import { useBookingStore } from '../store/useBookingStore';
+import { useUserStore } from '../store/useUserStore';
 
 interface SalesManagementProps {
-  packages: PackageState[];
-  bookings: Booking[]; // Renamed from 'sales' to 'bookings'
-  currentUser: User;
-  onAddBooking: (bookingData: Omit<Booking, 'id' | 'bookingDate' | 'salesAgentId' | 'salesAgentName'>) => boolean; // Renamed from onAddSale
-  canAddSales: boolean; // Renamed from canAddSales
+  onAddBooking: (bookingData: Omit<Booking, 'id' | 'bookingDate' | 'salesAgentId' | 'salesAgentName'>) => boolean;
 }
 
 export const SalesManagement: React.FC<SalesManagementProps> = ({
-  packages,
-  bookings, // Renamed from 'sales'
-  currentUser,
-  onAddBooking, // Renamed from onAddSale
-  canAddSales,
+  onAddBooking,
 }) => {
+  const { packages } = usePackageStore();
+  const { bookings } = useBookingStore();
+  const { currentUser } = useUserStore();
+  
   const [isBookingModalOpen, setIsBookingModalOpen] = useState(false);
 
   const publishedPackages = packages.filter(pkg => pkg.status === 'published');
+  const canAddSales = currentUser?.role === 'administrator' || currentUser?.role === 'sales_agent';
 
   const calculateTotalPax = (booking: Booking) => {
     return (booking.adultCount || 0) + (booking.childCount || 0) + (booking.infantCount || 0);
@@ -107,13 +107,15 @@ export const SalesManagement: React.FC<SalesManagementProps> = ({
         </SectionWrapper>
       </div>
 
-      <BookingModal
-        isOpen={isBookingModalOpen}
-        onClose={() => setIsBookingModalOpen(false)}
-        onSaveBooking={onAddBooking}
-        availablePackages={publishedPackages}
-        currentUser={currentUser}
-      />
+      {currentUser && (
+        <BookingModal
+            isOpen={isBookingModalOpen}
+            onClose={() => setIsBookingModalOpen(false)}
+            onSaveBooking={onAddBooking}
+            availablePackages={publishedPackages}
+            currentUser={currentUser}
+        />
+      )}
     </div>
   );
 };

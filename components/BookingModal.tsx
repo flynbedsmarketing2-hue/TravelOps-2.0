@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { PackageState, User, Booking, PassportScan, DocumentUpload, RoomType, BookingType, DocumentCategory, RoomConfiguration, RoomOccupant, PaxType } from '../types';
+import { PackageState, User, Booking, PassportScan, DocumentUpload, RoomType, BookingType, RoomConfiguration, RoomOccupant, PaxType, PaymentMethod } from '../types';
 import { extractPassportInfoFromImage } from '../utils/ai';
 
 interface BookingModalProps {
@@ -51,6 +51,13 @@ export const BookingModal: React.FC<BookingModalProps> = ({
   const [passportScans, setPassportScans] = useState<PassportScan[]>([]);
   const [requiredDocuments, setRequiredDocuments] = useState<DocumentUpload[]>([]);
 
+  // Payment State
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('ESPECES');
+  const [totalPrice, setTotalPrice] = useState<number>(0);
+  const [paidAmount, setPaidAmount] = useState<number>(0);
+  const [isFullyPaid, setIsFullyPaid] = useState<boolean>(false);
+  const [paymentProof, setPaymentProof] = useState<string>('');
+
   const [selectedPackageStock, setSelectedPackageStock] = useState<number | undefined>(undefined);
   const [error, setError] = useState<string>('');
   const [isExtractionLoading, setIsExtractionLoading] = useState(false);
@@ -68,11 +75,47 @@ export const BookingModal: React.FC<BookingModalProps> = ({
       const pkg = availablePackages.find(p => p.id === packageId);
       setSelectedPackageStock(pkg?.general.stock);
       setPackageName(pkg?.general.productName || '');
+      
+      // Calculate Option Date Logic
+      if (bookingType === 'En option' && pkg) {
+          const departureDate = pkg.flights[0]?.departureDate ? new Date(pkg.flights[0].departureDate) : null;
+          if (departureDate) {
+              const now = new Date();
+              const diffTime = departureDate.getTime() - now.getTime();
+              const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+              
+              let hoursToAdd = 72; // Default 3 days
+              
+              if (diffDays <= 3) hoursToAdd = 2; // Critical close departure
+              else if (diffDays <= 7) hoursToAdd = 24;
+              else if (diffDays <= 14) hoursToAdd = 48;
+              
+              // Low stock override
+              if ((pkg.general.stock || 0) < 5) {
+                  hoursToAdd = Math.min(hoursToAdd, 24);
+              }
+
+              const optionDate = new Date(now.getTime() + hoursToAdd * 60 * 60 * 1000);
+              
+              // Ensure option doesn't exceed departure
+              if (optionDate > departureDate) {
+                 setReservedUntil(departureDate.toISOString().slice(0, 16));
+              } else {
+                 setReservedUntil(optionDate.toISOString().slice(0, 16));
+              }
+          }
+      }
     } else {
       setSelectedPackageStock(undefined);
       setPackageName('');
     }
-  }, [packageId, availablePackages]);
+  }, [packageId, availablePackages, bookingType]);
+
+  useEffect(() => {
+      if (isFullyPaid) {
+          setPaidAmount(totalPrice);
+      }
+  }, [isFullyPaid, totalPrice]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -91,6 +134,12 @@ export const BookingModal: React.FC<BookingModalProps> = ({
       setPassportScans([]);
       setRequiredDocuments([]);
       setError('');
+      // Payment Reset
+      setPaymentMethod('ESPECES');
+      setTotalPrice(0);
+      setPaidAmount(0);
+      setIsFullyPaid(false);
+      setPaymentProof('');
     }
   }, [isOpen]);
 
@@ -124,6 +173,12 @@ export const BookingModal: React.FC<BookingModalProps> = ({
         default: return 1;
     }
   };
+
+  const getPassportPreview = (scanId: string | undefined) => {
+      if (!scanId) return null;
+      const scan = passportScans.find(s => s.id === scanId);
+      return scan ? `data:image/jpeg;base64,${scan.base64Image}` : null;
+  }
 
   // --- Handlers ---
 
@@ -159,7 +214,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
                       newOccupants.push({ id: `occ-${Date.now()}-${Math.random()}`, fullName: '', type: 'ADL' });
                   }
               }
-              // Remove slots if excessive AND empty (to preserve data if user accidentally switches)
+              // Remove slots if excessive AND empty
               else if (newOccupants.length > targetCount) {
                   const extras = newOccupants.slice(targetCount);
                   const isSafeToRemove = extras.every(o => !o.fullName.trim() && !o.passportScanId);
@@ -189,7 +244,6 @@ export const BookingModal: React.FC<BookingModalProps> = ({
   const removeOccupant = (roomId: string, occupantId: string) => {
       setRooms(rooms.map(r => {
           if (r.id === roomId) {
-              // Don't remove if it's the last one? Maybe allow but show empty state
               return {
                   ...r,
                   occupants: r.occupants.filter(o => o.id !== occupantId)
@@ -216,6 +270,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
       if (!file) return;
 
       setIsExtractionLoading(true);
+      setError(''); // Clear previous errors
       try {
           const base64Image = await fileToBase64(file);
           const extractedInfo = await extractPassportInfoFromImage(base64Image);
@@ -227,25 +282,53 @@ export const BookingModal: React.FC<BookingModalProps> = ({
               status: 'extracted'
           };
 
-          // Update global passports state
           setPassportScans(prev => [...prev, newPassport]);
 
-          // Link to occupant and auto-fill name
-          updateOccupant(roomId, occupantId, 'passportScanId', newPassport.id);
-          if (extractedInfo.fullName) {
-              updateOccupant(roomId, occupantId, 'fullName', extractedInfo.fullName);
-              
-              // If this is the very first passenger and clientName is empty, fill clientName too
-              if (!clientName) {
-                  setClientName(extractedInfo.fullName);
+          setRooms(prevRooms => prevRooms.map(r => {
+              if (r.id === roomId) {
+                  return {
+                      ...r,
+                      occupants: r.occupants.map(o => {
+                          if (o.id === occupantId) {
+                              return {
+                                  ...o,
+                                  passportScanId: newPassport.id,
+                                  fullName: extractedInfo.fullName || o.fullName,
+                                  passportNumber: extractedInfo.passportNumber || '',
+                                  nationality: extractedInfo.nationality || '',
+                                  birthDate: extractedInfo.dateOfBirth || '',
+                                  expiryDate: extractedInfo.expiryDate || ''
+                              };
+                          }
+                          return o;
+                      })
+                  };
               }
+              return r;
+          }));
+
+          // If lead name is empty, fill it
+          if (extractedInfo.fullName && !clientName) {
+              setClientName(extractedInfo.fullName);
           }
 
       } catch (err: any) {
+          console.error("Passport upload error:", err);
           setError("Erreur extraction passeport: " + err.message);
       } finally {
           setIsExtractionLoading(false);
           e.target.value = ''; // Reset input
+      }
+  };
+
+  const handlePaymentProofUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      try {
+          const base64 = await fileToBase64(file);
+          setPaymentProof(base64);
+      } catch (err) {
+          console.error(err);
       }
   };
 
@@ -275,8 +358,8 @@ export const BookingModal: React.FC<BookingModalProps> = ({
           clientName,
           agencyName,
           numberOfRooms: rooms.length,
-          roomType: rooms.length > 0 ? rooms[0].roomType : 'DOUBLE', // Simplified logic for main type
-          rooms, // Detail
+          roomType: rooms.length > 0 ? rooms[0].roomType : 'DOUBLE',
+          rooms, 
           invoiceBlackbird,
           invoicePlatform,
           adultCount: stats.adultCount,
@@ -287,7 +370,13 @@ export const BookingModal: React.FC<BookingModalProps> = ({
           bookingType,
           reservedUntil,
           passportScans,
-          requiredDocuments
+          requiredDocuments,
+          // Payment Info
+          paymentMethod,
+          totalPrice,
+          paidAmount,
+          isFullyPaid,
+          paymentProofUrl: paymentProof
       });
 
       if (success) onClose();
@@ -298,7 +387,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fadeIn">
-      <div className="relative bg-white dark:bg-slate-800 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 w-full max-w-4xl max-h-[95vh] overflow-hidden flex flex-col">
+      <div className="relative bg-white dark:bg-slate-800 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 w-full max-w-5xl max-h-[95vh] overflow-hidden flex flex-col">
         
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-700 bg-slate-900 text-white">
@@ -346,7 +435,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
                             <span className="text-xs font-bold text-slate-500 uppercase">Nom de l'Agence</span>
                             <input 
                                 className="form-input w-full rounded-lg border-slate-300 py-2 text-sm"
-                                placeholder="ex: Tassili Travel"
+                                placeholder="Nom de l'agence..."
                                 value={agencyName}
                                 onChange={e => setAgencyName(e.target.value)}
                                 required
@@ -356,16 +445,15 @@ export const BookingModal: React.FC<BookingModalProps> = ({
                             <span className="text-xs font-bold text-slate-500 uppercase">Client Principal (Lead)</span>
                             <input 
                                 className="form-input w-full rounded-lg border-slate-300 py-2 text-sm"
-                                placeholder="Nom du responsable"
+                                placeholder="Nom du client..."
                                 value={clientName}
                                 onChange={e => setClientName(e.target.value)}
                                 required
                             />
                         </label>
-                         <label className="flex flex-col gap-1.5">
+                        <label className="flex flex-col gap-1.5">
                             <span className="text-xs font-bold text-slate-500 uppercase">Téléphone</span>
                             <input 
-                                type="tel"
                                 className="form-input w-full rounded-lg border-slate-300 py-2 text-sm"
                                 placeholder="+213..."
                                 value={phoneNumber}
@@ -373,27 +461,27 @@ export const BookingModal: React.FC<BookingModalProps> = ({
                             />
                         </label>
                         <div className="flex gap-4">
-                             <label className="flex flex-col gap-1.5 flex-1">
+                            <label className="flex flex-col gap-1.5 flex-1">
                                 <span className="text-xs font-bold text-slate-500 uppercase">Type Résa</span>
-                                <select
+                                <select 
                                     className="form-select w-full rounded-lg border-slate-300 py-2 text-sm"
                                     value={bookingType}
                                     onChange={e => setBookingType(e.target.value as BookingType)}
                                 >
-                                    <option value="En option">Option</option>
+                                    <option value="En option">En option</option>
                                     <option value="Confirmée">Confirmée</option>
                                 </select>
                             </label>
                             {bookingType === 'En option' && (
-                                <label className="flex flex-col gap-1.5 flex-1">
-                                    <span className="text-xs font-bold text-slate-500 uppercase">Valide jusqu'au</span>
+                                <label className="flex flex-col gap-1.5 flex-1 animate-fadeIn">
+                                    <span className="text-xs font-bold text-slate-500 uppercase">Option jusqu'au</span>
                                     <input 
-                                        type="datetime-local"
-                                        className="form-input w-full rounded-lg border-slate-300 py-2 text-sm"
+                                        type="datetime-local" 
+                                        className="form-input w-full rounded-lg border-slate-300 py-2 text-sm bg-slate-50 text-slate-500 cursor-not-allowed"
                                         value={reservedUntil}
-                                        onChange={e => setReservedUntil(e.target.value)}
-                                        required
+                                        readOnly
                                     />
+                                    <span className="text-[10px] text-primary italic">Calculé automatiquement selon stock & départ</span>
                                 </label>
                             )}
                         </div>
@@ -401,157 +489,301 @@ export const BookingModal: React.FC<BookingModalProps> = ({
                 </div>
 
                 {/* 2. Rooming List */}
-                <div className="flex flex-col gap-4">
-                    <div className="flex justify-between items-end">
+                <div>
+                    <div className="flex items-center justify-between mb-4">
                         <h3 className="font-bold text-slate-800 dark:text-white flex items-center gap-2 text-sm uppercase tracking-wider">
                             <span className="material-symbols-outlined text-primary">bed</span> Rooming List
                         </h3>
                         <button 
                             type="button"
                             onClick={addRoom}
-                            className="text-primary hover:bg-primary/10 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 transition-colors"
+                            className="text-primary text-xs font-bold hover:bg-primary/5 px-2 py-1 rounded transition-colors flex items-center gap-1"
                         >
                             <span className="material-symbols-outlined text-[16px]">add</span> Ajouter Chambre
                         </button>
                     </div>
 
-                    {rooms.map((room, rIndex) => (
-                        <div key={room.id} className="bg-white dark:bg-slate-800 p-5 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm animate-fadeIn">
-                             <div className="flex justify-between items-center mb-4 border-b border-slate-100 pb-3">
-                                <div className="flex items-center gap-3">
-                                    <span className="bg-slate-100 text-slate-600 font-bold px-2 py-1 rounded text-xs">Chambre {rIndex + 1}</span>
-                                    <select
-                                        className="form-select border-none bg-transparent font-bold text-slate-800 text-sm focus:ring-0 cursor-pointer hover:bg-slate-50 rounded"
-                                        value={room.roomType}
-                                        onChange={e => updateRoomType(room.id, e.target.value as RoomType)}
+                    <div className="flex flex-col gap-4">
+                        {rooms.map((room, index) => (
+                            <div key={room.id} className="bg-white dark:bg-slate-800 p-4 rounded-lg border-2 border-blue-400 dark:border-blue-700 relative group animate-fadeIn shadow-sm">
+                                <div className="flex justify-between items-start mb-4">
+                                    <div className="flex items-center gap-3">
+                                        <span className="bg-slate-100 text-slate-600 border border-slate-200 text-xs font-bold px-2 py-1 rounded">Chambre {index + 1}</span>
+                                        <select 
+                                            className="form-select bg-transparent border-none text-sm font-bold text-slate-900 dark:text-white focus:ring-0 p-0 cursor-pointer uppercase"
+                                            value={room.roomType}
+                                            onChange={(e) => updateRoomType(room.id, e.target.value as RoomType)}
+                                        >
+                                            <option value="SINGLE">SINGLE (1 Pax)</option>
+                                            <option value="DOUBLE">DOUBLE (2 Pax)</option>
+                                            <option value="TWIN">TWIN (2 Pax)</option>
+                                            <option value="TRIPLE">TRIPLE (3 Pax)</option>
+                                            <option value="QUADRUPLE">QUADRUPLE (4 Pax)</option>
+                                            <option value="DEMI DOUBLE HOMME">DEMI DOUBLE HOMME (Partage)</option>
+                                            <option value="DEMI DOUBLE FEMME">DEMI DOUBLE FEMME (Partage)</option>
+                                        </select>
+                                    </div>
+                                    <button 
+                                        type="button" 
+                                        onClick={() => removeRoom(room.id)}
+                                        className="text-slate-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                                        title="Supprimer la chambre"
                                     >
-                                        <option value="SINGLE">SINGLE (1 Pax)</option>
-                                        <option value="DOUBLE">DOUBLE (2 Pax)</option>
-                                        <option value="TWIN">TWIN (2 Pax)</option>
-                                        <option value="TRIPLE">TRIPLE (3 Pax)</option>
-                                        <option value="QUADRUPLE">QUADRUPLE (4 Pax)</option>
-                                        <option value="DEMI DOUBLE HOMME">DEMI DOUBLE HOMME (1 Pax)</option>
-                                        <option value="DEMI DOUBLE FEMME">DEMI DOUBLE FEMME (1 Pax)</option>
-                                    </select>
-                                </div>
-                                {rooms.length > 1 && (
-                                    <button type="button" onClick={() => removeRoom(room.id)} className="text-slate-400 hover:text-red-500">
-                                        <span className="material-symbols-outlined text-[18px]">delete</span>
+                                        <span className="material-symbols-outlined text-[20px]">delete</span>
                                     </button>
-                                )}
-                             </div>
+                                </div>
 
-                             <div className="space-y-3">
-                                 {room.occupants.map((occupant, oIndex) => {
-                                     const hasPassport = !!occupant.passportScanId;
-                                     return (
-                                        <div key={occupant.id} className="flex flex-wrap md:flex-nowrap gap-3 items-center">
-                                            <div className="flex items-center justify-center bg-slate-100 text-slate-400 rounded-full w-6 h-6 text-[10px] font-bold shrink-0">
-                                                {oIndex + 1}
-                                            </div>
-                                            <div className="flex-1 min-w-[200px]">
-                                                <input 
-                                                    className="form-input w-full rounded border-slate-300 py-1.5 px-3 text-sm focus:outline-none placeholder:text-slate-300"
-                                                    placeholder="Nom Complet (ex: HEDIDANE NADIA)"
-                                                    value={occupant.fullName}
-                                                    onChange={e => updateOccupant(room.id, occupant.id, 'fullName', e.target.value)}
-                                                />
-                                            </div>
-                                            <div className="w-28">
-                                                <select
-                                                    className="form-select w-full rounded border-slate-300 py-1.5 text-sm"
-                                                    value={occupant.type}
-                                                    onChange={e => updateOccupant(room.id, occupant.id, 'type', e.target.value)}
-                                                >
-                                                    <option value="ADL">Adulte</option>
-                                                    <option value="CHD">Enfant</option>
-                                                    <option value="INF">Bébé</option>
-                                                </select>
-                                            </div>
-                                            
-                                            {/* Passport Action */}
-                                            <label className={`cursor-pointer flex items-center justify-center gap-1 px-3 py-1.5 rounded border text-xs font-bold transition-all ${
-                                                hasPassport 
-                                                ? 'bg-green-50 border-green-200 text-green-700' 
-                                                : 'bg-white border-slate-300 text-slate-500 hover:bg-slate-50'
-                                            }`}>
-                                                <input 
-                                                    type="file" 
-                                                    accept="image/*" 
-                                                    className="hidden" 
-                                                    onChange={(e) => handlePassportUploadForOccupant(e, room.id, occupant.id)}
-                                                    disabled={isExtractionLoading}
-                                                />
-                                                {isExtractionLoading && !hasPassport ? (
-                                                    <span className="material-symbols-outlined animate-spin text-[16px]">refresh</span>
-                                                ) : (
-                                                    <span className="material-symbols-outlined text-[16px]">{hasPassport ? 'check_circle' : 'upload_file'}</span>
-                                                )}
-                                                {hasPassport ? 'Scan OK' : 'Scan'}
-                                            </label>
+                                <div className="space-y-4">
+                                    {room.occupants.map((occupant, idx) => {
+                                        const previewUrl = getPassportPreview(occupant.passportScanId);
+                                        return (
+                                            <div key={occupant.id} className="p-3 bg-slate-50 dark:bg-slate-900/50 rounded-lg border border-slate-200 dark:border-slate-700">
+                                                <div className="flex flex-wrap md:flex-nowrap gap-3 items-center mb-3">
+                                                    <div className="flex items-center justify-center size-6 rounded-full bg-white border border-slate-200 text-slate-500 text-xs font-bold shrink-0">
+                                                        {idx + 1}
+                                                    </div>
+                                                    
+                                                    <div className="flex-1 min-w-[200px]">
+                                                        <input 
+                                                            className="form-input w-full rounded-md border-slate-300 py-1.5 text-sm"
+                                                            placeholder="Nom Prénom du passager"
+                                                            value={occupant.fullName}
+                                                            onChange={e => updateOccupant(room.id, occupant.id, 'fullName', e.target.value)}
+                                                        />
+                                                    </div>
+                                                    
+                                                    <div className="w-28 shrink-0">
+                                                        <select 
+                                                            className="form-select w-full rounded-md border-slate-300 py-1.5 text-sm"
+                                                            value={occupant.type}
+                                                            onChange={e => updateOccupant(room.id, occupant.id, 'type', e.target.value)}
+                                                        >
+                                                            <option value="ADL">Adulte</option>
+                                                            <option value="CHD">Enfant</option>
+                                                            <option value="INF">Bébé</option>
+                                                        </select>
+                                                    </div>
 
-                                            <button 
-                                                type="button" 
-                                                onClick={() => removeOccupant(room.id, occupant.id)}
-                                                className="text-slate-300 hover:text-red-500 transition-colors"
-                                                title="Retirer occupant"
-                                            >
-                                                <span className="material-symbols-outlined text-[18px]">remove_circle</span>
-                                            </button>
+                                                    <label className="flex items-center gap-1 cursor-pointer bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 px-3 py-1.5 rounded-md transition-colors shadow-sm shrink-0" title="Scanner Passeport">
+                                                        <input 
+                                                            type="file" 
+                                                            accept="image/*" 
+                                                            className="hidden" 
+                                                            onChange={(e) => handlePassportUploadForOccupant(e, room.id, occupant.id)}
+                                                        />
+                                                        <span className="material-symbols-outlined text-[18px]">document_scanner</span>
+                                                        <span className="text-xs font-bold">Scan</span>
+                                                    </label>
+
+                                                    {previewUrl && (
+                                                        <div className="relative size-9 rounded overflow-hidden border border-slate-300 group/preview cursor-pointer">
+                                                            <img src={previewUrl} alt="Passport" className="w-full h-full object-cover" />
+                                                            <div className="absolute inset-0 bg-black/50 hidden group-hover/preview:flex items-center justify-center text-white">
+                                                                <span className="material-symbols-outlined text-[14px]">visibility</span>
+                                                            </div>
+                                                        </div>
+                                                    )}
+
+                                                    {room.occupants.length > 1 && (
+                                                        <button 
+                                                            type="button" 
+                                                            onClick={() => removeOccupant(room.id, occupant.id)}
+                                                            className="text-slate-300 hover:text-red-500 shrink-0"
+                                                        >
+                                                            <span className="material-symbols-outlined text-[18px]">remove_circle</span>
+                                                        </button>
+                                                    )}
+                                                </div>
+
+                                                {/* Detailed Passport Fields */}
+                                                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                                                    <label className="flex flex-col gap-1">
+                                                        <span className="font-bold text-slate-500">N° Passeport</span>
+                                                        <input 
+                                                            className="form-input rounded border-slate-200 py-1 px-2 text-xs"
+                                                            placeholder="ex: 123456789"
+                                                            value={occupant.passportNumber || ''}
+                                                            onChange={e => updateOccupant(room.id, occupant.id, 'passportNumber', e.target.value)}
+                                                        />
+                                                    </label>
+                                                    <label className="flex flex-col gap-1">
+                                                        <span className="font-bold text-slate-500">Nationalité</span>
+                                                        <input 
+                                                            className="form-input rounded border-slate-200 py-1 px-2 text-xs uppercase"
+                                                            placeholder="ex: ALG"
+                                                            value={occupant.nationality || ''}
+                                                            onChange={e => updateOccupant(room.id, occupant.id, 'nationality', e.target.value)}
+                                                        />
+                                                    </label>
+                                                    <label className="flex flex-col gap-1">
+                                                        <span className="font-bold text-slate-500">Date Naissance</span>
+                                                        <input 
+                                                            type="date"
+                                                            className="form-input rounded border-slate-200 py-1 px-2 text-xs"
+                                                            value={occupant.birthDate || ''}
+                                                            onChange={e => updateOccupant(room.id, occupant.id, 'birthDate', e.target.value)}
+                                                        />
+                                                    </label>
+                                                    <label className="flex flex-col gap-1">
+                                                        <span className="font-bold text-slate-500">Date Expiration</span>
+                                                        <input 
+                                                            type="date"
+                                                            className="form-input rounded border-slate-200 py-1 px-2 text-xs"
+                                                            value={occupant.expiryDate || ''}
+                                                            onChange={e => updateOccupant(room.id, occupant.id, 'expiryDate', e.target.value)}
+                                                        />
+                                                    </label>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                    <button 
+                                        type="button" 
+                                        onClick={() => addOccupant(room.id)}
+                                        className="text-primary text-xs font-bold flex items-center hover:underline ml-1"
+                                    >
+                                        <span className="material-symbols-outlined text-[14px] mr-1">person_add</span>
+                                        Ajouter Occupant
+                                    </button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+                
+                {/* 3. Payment Method Section */}
+                 <div className="bg-white dark:bg-slate-800 p-5 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm">
+                    <h3 className="font-bold text-slate-800 dark:text-white mb-4 flex items-center gap-2 text-sm uppercase tracking-wider">
+                        <span className="material-symbols-outlined text-primary">payments</span> Paiement
+                    </h3>
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        {/* Left: Method & Proof */}
+                        <div className="flex flex-col gap-4">
+                            <label className="flex flex-col gap-1.5">
+                                <span className="text-xs font-bold text-slate-500 uppercase">Mode de Paiement</span>
+                                <select 
+                                    className="form-select w-full rounded-lg border-slate-300 py-2 text-sm"
+                                    value={paymentMethod}
+                                    onChange={(e) => {
+                                        setPaymentMethod(e.target.value as PaymentMethod);
+                                        setPaymentProof(''); // Reset proof on change
+                                    }}
+                                >
+                                    <option value="ESPECES">Espèces (Deposit)</option>
+                                    <option value="VIREMENT">Virement / Versement</option>
+                                    <option value="CHEQUE">Chèque</option>
+                                </select>
+                            </label>
+
+                            {/* Conditional Upload */}
+                            {paymentMethod !== 'ESPECES' && (
+                                <div className="animate-fadeIn">
+                                    <span className="text-xs font-bold text-slate-500 uppercase mb-1.5 block">Preuve de Paiement</span>
+                                    <label className="flex flex-col items-center justify-center w-full h-24 border-2 border-dashed border-slate-300 rounded-lg cursor-pointer bg-slate-50 hover:bg-slate-100 transition-colors">
+                                        <div className="flex flex-col items-center justify-center pt-2 pb-3">
+                                            {paymentProof ? (
+                                                <div className="flex items-center gap-2 text-green-600 font-bold text-sm">
+                                                    <span className="material-symbols-outlined">check_circle</span>
+                                                    Fichier Reçu
+                                                </div>
+                                            ) : (
+                                                <>
+                                                    <span className="material-symbols-outlined text-slate-400 mb-1">cloud_upload</span>
+                                                    <p className="text-xs text-slate-500">Cliquez pour uploader</p>
+                                                </>
+                                            )}
                                         </div>
-                                     );
-                                 })}
-                                 
-                                 <button 
-                                    type="button"
-                                    onClick={() => addOccupant(room.id)}
-                                    className="mt-2 text-xs font-bold text-primary hover:underline flex items-center gap-1"
-                                 >
-                                     <span className="material-symbols-outlined text-[14px]">person_add</span>
-                                     Ajouter Occupant
-                                 </button>
-                             </div>
+                                        <input type="file" className="hidden" accept="image/*,.pdf" onChange={handlePaymentProofUpload} />
+                                    </label>
+                                </div>
+                            )}
                         </div>
-                    ))}
+
+                        {/* Right: Amounts */}
+                        <div className="flex flex-col gap-4 bg-slate-50 p-4 rounded-lg border border-slate-100">
+                             <label className="flex flex-col gap-1.5">
+                                <span className="text-xs font-bold text-slate-500 uppercase">Total à Payer (DZD)</span>
+                                <input 
+                                    type="number"
+                                    className="form-input w-full rounded-lg border-slate-300 py-2 text-sm font-bold text-slate-800"
+                                    placeholder="0.00"
+                                    value={totalPrice || ''}
+                                    onChange={e => setTotalPrice(parseFloat(e.target.value))}
+                                />
+                            </label>
+                            
+                            <label className="flex flex-col gap-1.5">
+                                <span className="text-xs font-bold text-slate-500 uppercase">Montant Versé (DZD)</span>
+                                <input 
+                                    type="number"
+                                    className="form-input w-full rounded-lg border-slate-300 py-2 text-sm"
+                                    placeholder="0.00"
+                                    value={paidAmount || ''}
+                                    onChange={e => {
+                                        setPaidAmount(parseFloat(e.target.value));
+                                        if (parseFloat(e.target.value) !== totalPrice) setIsFullyPaid(false);
+                                    }}
+                                    disabled={isFullyPaid}
+                                />
+                            </label>
+
+                             <label className="flex items-center gap-2 mt-1 cursor-pointer">
+                                <input 
+                                    type="checkbox" 
+                                    className="w-4 h-4 text-primary rounded border-slate-300 focus:ring-primary"
+                                    checked={isFullyPaid}
+                                    onChange={(e) => setIsFullyPaid(e.target.checked)}
+                                />
+                                <span className="text-sm font-bold text-slate-700">Totalité payée</span>
+                            </label>
+                        </div>
+                    </div>
                 </div>
 
-                {/* 3. Footer / Additional */}
-                <div className="bg-white dark:bg-slate-800 p-5 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm mt-2">
+                {/* 4. Notes & Footer */}
+                <div className="bg-white dark:bg-slate-800 p-5 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm">
                     <label className="flex flex-col gap-1.5">
                         <span className="text-xs font-bold text-slate-500 uppercase">Notes Internes / Divers</span>
                         <textarea 
-                            className="form-input w-full rounded-lg border-slate-300 py-2 text-sm min-h-[60px]"
-                            placeholder="Informations supplémentaires..."
+                            className="form-input w-full rounded-lg border-slate-300 p-3 text-sm h-24 resize-none"
+                            placeholder="Informations supplémentaires (ex: régime alimentaire, demandes spéciales)..."
                             value={otherInfo}
                             onChange={e => setOtherInfo(e.target.value)}
                         />
                     </label>
                 </div>
 
+                {/* Error Banner */}
                 {error && (
-                    <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm font-bold border border-red-200 flex items-center gap-2">
-                        <span className="material-symbols-outlined">error</span>
-                        {error}
+                    <div className="bg-red-50 border border-red-200 rounded-lg p-4 flex items-start gap-3 animate-pulse">
+                        <span className="material-symbols-outlined text-red-600">error</span>
+                        <p className="text-sm font-bold text-red-700">{error}</p>
                     </div>
                 )}
+
             </form>
         </div>
 
-        {/* Footer Actions */}
-        <div className="px-6 py-4 bg-white dark:bg-slate-800 border-t border-slate-200 dark:border-slate-700 flex justify-between items-center">
+        {/* Footer */}
+        <div className="border-t border-slate-200 dark:border-slate-700 p-4 bg-white dark:bg-slate-800 flex justify-between items-center shrink-0">
             <div className="text-xs font-mono text-slate-500">
-                <span className="font-bold text-slate-800">{stats.totalPax} Pax</span> ({stats.adultCount} Adl, {stats.childCount} Chd, {stats.infantCount} Inf) • {rooms.length} Chambre(s)
+                <span className="font-bold text-slate-900 dark:text-white">{stats.totalPax} Pax</span> ({stats.adultCount} Adl, {stats.childCount} Chd, {stats.infantCount} Inf) • {rooms.length} Chambre(s)
             </div>
             <div className="flex gap-3">
-                <button onClick={onClose} className="px-6 py-2 bg-slate-100 text-slate-700 font-bold text-sm rounded-lg hover:bg-slate-200 transition-colors">
+                <button 
+                    onClick={onClose}
+                    className="px-4 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-sm transition-colors"
+                >
                     Annuler
                 </button>
                 <button 
-                    type="submit" 
+                    type="submit"
                     form="bookingForm"
-                    className="px-6 py-2 bg-green-600 text-white font-bold text-sm rounded-lg hover:bg-green-700 shadow-lg shadow-green-600/20 flex items-center gap-2"
+                    disabled={isExtractionLoading}
+                    className="px-6 py-2 rounded-lg bg-[#2ecc71] hover:bg-[#27ae60] text-white font-bold text-sm shadow-md shadow-green-500/20 transition-all flex items-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed"
                 >
-                    <span className="material-symbols-outlined text-[18px]">check</span>
+                    {isExtractionLoading && <span className="material-symbols-outlined animate-spin text-[18px]">refresh</span>}
                     Confirmer
                 </button>
             </div>

@@ -1,14 +1,16 @@
 import React from 'react';
-import { PackageState, OpsProject, OpsDepartureGroup, User } from '../types';
+import { PackageState, OpsDepartureGroup } from '../types';
+import { usePackageStore } from '../store/usePackageStore';
+import { useUserStore } from '../store/useUserStore';
 
 interface OpsDashboardProps {
-  packages: PackageState[];
-  opsRecords: OpsProject[];
-  currentUser: User;
   onSelectGroup: (pkg: PackageState, group: OpsDepartureGroup) => void;
 }
 
-export const OpsDashboard: React.FC<OpsDashboardProps> = ({ packages, opsRecords, currentUser, onSelectGroup }) => {
+export const OpsDashboard: React.FC<OpsDashboardProps> = ({ onSelectGroup }) => {
+  const { packages, opsRecords } = usePackageStore();
+  const { currentUser } = useUserStore();
+
   // Only show published packages for Ops
   const activePackages = packages.filter(p => p.status === 'published');
 
@@ -31,12 +33,11 @@ export const OpsDashboard: React.FC<OpsDashboardProps> = ({ packages, opsRecords
       }));
   }).sort((a, b) => (a.daysLeft ?? 999) - (b.daysLeft ?? 999));
 
-  // Filter based on user role: Designers see their pending stuff, others see validated only unless they are admin
+  // Filter based on user role
   const filteredDepartures = allDepartures.filter(item => {
-      if (currentUser.role === 'administrator') return true;
+      if (currentUser?.role === 'administrator') return true;
       if (item.group.status === 'validated') return true;
-      // If pending, only show to admins (handled above) or potentially the creator (if we tracked creator ID in ops, simplified here)
-      if (currentUser.role === 'travel_designer') return true; 
+      if (currentUser?.role === 'travel_designer') return true; 
       return false; 
   });
 

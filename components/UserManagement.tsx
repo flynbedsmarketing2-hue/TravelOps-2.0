@@ -1,20 +1,13 @@
 import React, { useState } from 'react';
 import { User, UserRole } from '../types';
+import { useUserStore } from '../store/useUserStore';
 
-interface UserManagementProps {
-  users: User[];
-  currentUser: User;
-  onAddUser: (user: Omit<User, 'id'>) => void;
-  onUpdateUser: (user: User) => void;
-  onDeleteUser: (id: string) => void;
-}
-
-export const UserManagement: React.FC<UserManagementProps> = ({ 
-  users, currentUser, onAddUser, onUpdateUser, onDeleteUser 
-}) => {
+export const UserManagement: React.FC = () => {
+  const { users, currentUser, addUser, updateUser, deleteUser } = useUserStore();
+  
   const [isEditing, setIsEditing] = useState(false);
   const [editingUser, setEditingUser] = useState<Partial<User>>({
-    role: 'travel_designer', // Default new user to travel designer
+    role: 'travel_designer', 
     avatarUrl: ''
   });
 
@@ -29,7 +22,7 @@ export const UserManagement: React.FC<UserManagementProps> = ({
   };
 
   const handleEditClick = (user: User) => {
-    setEditingUser({ ...user, password: '' }); // Don't show password
+    setEditingUser({ ...user, password: '' });
     setIsEditing(true);
   };
 
@@ -41,12 +34,10 @@ export const UserManagement: React.FC<UserManagementProps> = ({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (editingUser.id) {
-        // Update
-        onUpdateUser(editingUser as User);
+        updateUser(editingUser as User);
     } else {
-        // Create
         if (!editingUser.username || !editingUser.password || !editingUser.fullName) return;
-        onAddUser(editingUser as Omit<User, 'id'>);
+        addUser(editingUser as Omit<User, 'id'>);
     }
     setIsEditing(false);
     setEditingUser({});
@@ -66,6 +57,7 @@ export const UserManagement: React.FC<UserManagementProps> = ({
                 </div>
                 
                 <form onSubmit={handleSubmit} className="flex flex-col gap-5">
+                    {/* ... Same inputs as before ... */}
                     <label className="flex flex-col gap-2">
                         <span className="text-sm font-bold text-slate-700">Nom Complet</span>
                         <input 
@@ -218,19 +210,19 @@ export const UserManagement: React.FC<UserManagementProps> = ({
                                     </button>
                                     <button 
                                         onClick={() => {
-                                            if (user.id === currentUser.id) {
+                                            if (currentUser && user.id === currentUser.id) {
                                                 alert("Vous ne pouvez pas vous supprimer vous-même.");
                                                 return;
                                             }
-                                            if (window.confirm("Supprimer cet utilisateur ?")) onDeleteUser(user.id);
+                                            if (window.confirm("Supprimer cet utilisateur ?")) deleteUser(user.id);
                                         }}
                                         className={`p-2 rounded-full transition-all ${
-                                            user.id === currentUser.id 
+                                            (currentUser && user.id === currentUser.id) 
                                             ? 'text-slate-200 cursor-not-allowed' 
                                             : 'text-slate-400 hover:text-red-500 hover:bg-red-50'
                                         }`}
                                         title="Supprimer"
-                                        disabled={user.id === currentUser.id}
+                                        disabled={!!currentUser && user.id === currentUser.id}
                                     >
                                         <span className="material-symbols-outlined text-[20px]">delete</span>
                                     </button>

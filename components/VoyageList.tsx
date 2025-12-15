@@ -1,33 +1,44 @@
 import React, { useState, useMemo } from 'react';
-import { PackageState, Booking, RoomType } from '../types';
+import { PackageState, RoomType } from '../types';
+import { usePackageStore } from '../store/usePackageStore';
+import { useBookingStore } from '../store/useBookingStore';
 
 interface VoyageListProps {
-  packages: PackageState[];
-  bookings?: Booking[]; // Make bookings optional but likely passed
   onBook: (pkg: PackageState) => void;
 }
 
-export const VoyageList: React.FC<VoyageListProps> = ({ packages, bookings = [], onBook }) => {
+export const VoyageList: React.FC<VoyageListProps> = ({ onBook }) => {
+  const { packages } = usePackageStore();
+  const { bookings } = useBookingStore();
+
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedDestination, setSelectedDestination] = useState('All');
   const [selectedMonth, setSelectedMonth] = useState('All');
-  const [selectedPackage, setSelectedPackage] = useState<PackageState | null>(null); // For Details Modal
+  const [selectedPackage, setSelectedPackage] = useState<PackageState | null>(null);
 
   // Filter only published packages
   const activePackages = useMemo(() => packages.filter(p => p.status === 'published'), [packages]);
 
   // Extract unique destinations and months for filters
   const destinations = useMemo(() => {
-    const dests = new Set(activePackages.map(p => p.destination).filter(Boolean));
+    const dests = new Set(
+      activePackages
+        .map(p => p.destination)
+        .filter((d): d is string => !!d)
+    );
     return ['All', ...Array.from(dests)];
   }, [activePackages]);
 
   const months = useMemo(() => {
-    const ms = new Set(activePackages.map(p => {
-        const date = p.flights[0]?.departureDate;
-        if (!date) return null;
-        return new Date(date).toLocaleString('fr-FR', { month: 'long', year: 'numeric' });
-    }).filter(Boolean));
+    const ms = new Set(
+      activePackages
+        .map(p => {
+          const date = p.flights[0]?.departureDate;
+          if (!date) return null;
+          return new Date(date).toLocaleString('fr-FR', { month: 'long', year: 'numeric' });
+        })
+        .filter((m): m is string => !!m)
+    );
     return ['All', ...Array.from(ms)];
   }, [activePackages]);
 
@@ -135,7 +146,7 @@ export const VoyageList: React.FC<VoyageListProps> = ({ packages, bookings = [],
                     onChange={(e) => setSelectedDestination(e.target.value)}
                 >
                     <option value="All">Toutes Destinations</option>
-                    {destinations.filter(d => d !== 'All').map(d => <option key={d} value={d}>{d}</option>)}
+                    {destinations.filter((d) => d !== 'All').map((d) => <option key={d} value={d}>{d}</option>)}
                 </select>
                 <select 
                     className="px-4 py-2.5 rounded-lg border border-slate-300 bg-white text-sm focus:outline-none focus:border-primary"
@@ -143,7 +154,7 @@ export const VoyageList: React.FC<VoyageListProps> = ({ packages, bookings = [],
                     onChange={(e) => setSelectedMonth(e.target.value)}
                 >
                     <option value="All">Tous les Mois</option>
-                    {months.filter(m => m !== 'All').map(m => <option key={m} value={m as string}>{m}</option>)}
+                    {months.filter((m) => m !== 'All').map((m) => <option key={m} value={m}>{m}</option>)}
                 </select>
             </div>
         </div>

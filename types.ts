@@ -100,6 +100,7 @@ export type RoomType = 'TRIPLE' | 'DOUBLE' | 'SINGLE' | 'QUADRUPLE' | 'BILLET SE
 export type BookingType = 'En option' | 'Confirmée';
 export type DocumentCategory = 'photo_identite' | 'copie_visa' | 'attestation_travail' | 'autre';
 export type PaxType = 'ADL' | 'CHD' | 'INF';
+export type PaymentMethod = 'ESPECES' | 'VIREMENT' | 'CHEQUE';
 
 export interface PassportScan {
   id: string;
@@ -127,6 +128,11 @@ export interface RoomOccupant {
   fullName: string;
   type: PaxType;
   passportScanId?: string; // Link to a scan in passportScans array
+  // Detailed info
+  passportNumber?: string;
+  nationality?: string;
+  birthDate?: string;
+  expiryDate?: string;
 }
 
 export interface RoomConfiguration {
@@ -143,7 +149,7 @@ export interface Booking {
   agencyName: string;
   numberOfRooms: number;
   roomType: RoomType; // Primary or summary room type
-  rooms: RoomConfiguration[]; // NEW: Detailed rooming list
+  rooms: RoomConfiguration[]; // Detailed rooming list
   invoiceBlackbird: string;
   invoicePlatform: string;
   adultCount: number;
@@ -158,6 +164,13 @@ export interface Booking {
   bookingDate: string;
   salesAgentId: string;
   salesAgentName: string;
+  
+  // Payment Info
+  paymentMethod?: PaymentMethod;
+  totalPrice?: number;
+  paidAmount?: number;
+  isFullyPaid?: boolean;
+  paymentProofUrl?: string; // Base64 of receipt
 }
 
 // --- OPS MODULE UPDATED ---
